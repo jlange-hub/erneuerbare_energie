@@ -1,0 +1,11 @@
+# Erzwinge, dass GitHub das Repository als R-Projekt erkennt
+*.Rmd linguist-language=R
+*.R   linguist-language=R
+*.Rproj linguist-language=R
+
+# HTML-Dateien aus der Spracherkennung ausschließen
+*.html linguist-detectable=false
+
+# Sonstige Dateien ignorieren (z. B. Bilder, CSVs)
+*.png linguist-detectable=false
+*.csv linguist-detectable=false
