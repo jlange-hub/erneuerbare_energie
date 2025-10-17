@@ -1,0 +1,31 @@
+# Autor Jaqueline Lange
+#   Git Ignore für Projekt: erneuerbare_energie
+
+# R/ RStudio 
+.Rhistory
+.Rapp.history
+.RData
+.Ruserdata
+.Rproj.user/
+
+# Betriebssystem-Dateien
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporäre oder Cache-Dateien
+*_cache/
+*_files/
+*.tmp
+*.bak
+*.log
+
+# sonstiges
+.README.html
+
+# ---- Whitelist ----
+!README.md
+!*.R
+!*.Rmd
+!*.Rproj
+!data/*.csv

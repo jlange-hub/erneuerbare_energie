@@ -1,0 +1,579 @@
+---
+title: "Zeitreihenanalyse und Prognose der Stromerzeugung aus Erneuerbaren Energien in Deutschland"
+author: "Jaqueline Lange"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+    df_print: paged
+    theme: cerulean
+---
+
+
+## **1. Einleitung und Motivation**
+
+Die Energiewende in Deutschland hat in den letzten Jahren zu einem starken Ausbau erneuerbarer Energiequellen wie Solarstrom, Windenergie Onshore und Windenergie Offshore geführt. Da diese Energiequellen wetterabhängig sind, schwankt ihre Stromeinspeisung über Tage, Wochen und Jahreszeiten hinweg. Für einen stabilen Netzbetrieb und eine effiziente Energienutzung ist daher entscheidend, die zeitliche Entwicklung und Prognose dieser Erzeugungsdaten präzise zu analysieren.
+
+Die Analyse und Vorhersage erneuerbarer Energiequellen liefert einen wichtigen Beitrag zur nachhaltigen Energieplanung und Netzintegration. Datenbasierte Prognosemodelle ermöglichen:
+
+- die Optimierung von Erzeugungs- und Speicherstrategien
+- eine bessere Lastverteilung im Netz
+- eine Reduktion von Energieüberschüssen und Kohlenstoffdioxid-Emissionen
+
+### **1.1 Ziel**
+
+Das Ziel dieses Projekts ist die Modellierung und Prognose täglicher Stromerzeugung aus Solarenergie, Wind Onshore und Wind Offshore in Deutschland. Hierbei werden insbesondere folgende Aspekte behandelt:
+
+1. Untersuchung der zeitlichen Muster und saisonalen Schwankungen
+2. Modellierung und Prognose der Daten mit ARIMA und Prophet
+3. Validierung sowie Vergleich der Modelle anhand von Fehlerkennzahlen (RMSE, MAE, MAPE, Coverage)
+
+Das Projekt dient zugleich als Portfolio-Beispiel für datengetriebene Energieanalysen, in dem klassische und moderne Methoden der Zeitreihenanalyse demonstriert werden.
+
+Die Analyse wurde in der Programmiersprache R in der Version 4.5.1 und RStudio Version: 2025.09.0+387 durchgeführt. Die Daten stammen von [Open Power System Data](https://data.open-power-system-data.org/). 
+
+
+## **2. Datenvorbereitung**
+### **2.1 Datenimport**
+
+```{r cars, message=FALSE, warning=FALSE, results='hide'}
+packages <- c(
+  "here",
+  "tidyverse",
+  "lubridate",
+  "forecast",
+  "zoo",
+  "tseries",
+  "prophet"
+)
+
+# Fehlende Pakete installieren
+installed_packages <- rownames(installed.packages())
+for (pkg in packages) {
+  if (!(pkg %in% installed_packages)) {
+    install.packages(pkg, dependencies = TRUE)
+  }
+}
+
+# Alle Pakete laden
+lapply(packages, library, character.only = TRUE)
+
+# CSV einlesen
+
+csv_path <- here("data", "time_series_60min_singleindex_DE.csv")
+ if (!file.exists(csv_path)) {
+   stop("CSV wurde hier nicht gefunden: ", csv_path,
+        "\nLege die Datei in den Ordner 'data/' im Projekt-Root oder passe den Pfad an.")
+ }
+ data <- read_csv(csv_path)
+```
+
+
+### **2.2 Datenbereinigung**
+
+Die Rohdaten enthielten einige fehlende Werte in den Spalten zur Stromerzeugung aus Solar (104), Wind Onshore (73) und Wind Offshore (75). Insgesamt wurden 252 Zeilen mit fehlenden Werten entfernt.
+
+```{r na-data, message=FALSE, warning=FALSE, results='hide'}
+colSums(is.na(data)) # Anzahl NA der jeweiligen Spalten
+```
+
+```{r clean-data, results='hide'}
+data_clean <- data %>%
+# Zeitstempel umbenennen
+  rename(datetime = cet_cest_timestamp) %>%
+# Relevante Spalten auswählen
+  select(datetime,
+         solar = DE_solar_generation_actual,
+         wind_onshore = DE_wind_onshore_generation_actual,
+         wind_offshore = DE_wind_offshore_generation_actual) %>%
+# NA-Werte entfernen
+  drop_na() 
+
+# Erste Zeilen zur Überprüfung anzeigen
+head(data_clean)
+```
+
+**Basis Plot zur ersten Übersicht** 
+
+```{r basic-plot, echo = FALSE}
+library(ggplot2)
+
+ggplot(data_clean, aes(x = datetime)) +
+  geom_line(aes(y = solar, color = "Solar")) +
+  geom_line(aes(y = wind_onshore, color = "Wind Onshore")) +
+  geom_line(aes(y = wind_offshore, color = "Wind Offshore")) +
+  labs(
+    title = "Stromerzeugung mit erneuerbaren Energien in Deutschland",
+    subtitle = "Quelle: Open Power System Data",  
+    x = "Datum",
+    y = "MWh",
+    color = "Energiequelle"
+  ) +
+  theme_minimal()
+
+```
+
+Der Plot zeigt den zeitlichen Verlauf der Stromerzeugung aus den Energiequellen Solar, Wind Onshore und Wind Offshore im Zeitraum von Januar 2015 bis September 2020. Zu erkennen ist, dass sich regelmäßige wiederkehrende zeitliche Schwankungen ergeben, insbesondere bei Solar und Wind Onshore, was auf eine saisonale Komponente hinweist. Zudem ist ein allgemeiner Anstieg der Stromerzeugung über die Jahre sichtbar. 
+
+### **2.3 Datenaggregation** 
+```{r data-aggregation}
+# Aggregation täglich (Energiesumme pro Tag in MWh)
+daily_data <- data_clean %>%
+# Datum aus Zeitstempel extrahieren
+  mutate(date = as.Date(datetime)) %>%
+# Gruppierung aller Zeilen mit demselben Datum
+  group_by(date) %>%
+# Summe der Energiequellen pro Tag
+  summarise( 
+    solar = sum(solar, na.rm = TRUE), # tägliche Solarproduktion 
+    wind_onshore = sum(wind_onshore, na.rm = TRUE), # tägliche Onshore Windproduktion
+    wind_offshore = sum(wind_offshore, na.rm = TRUE), # tägliche Offshore Windproduktion
+    .groups = "drop" # Gruppierung aufheben um Fehler durch gruppiertes Tibble nachhaltig zu vermeiden
+  )
+
+# Tägliche Daten in das Long-Format umwandeln für ggplot2
+daily_long <- daily_data %>%
+  pivot_longer(cols = c(solar, wind_onshore, wind_offshore),
+               names_to = "source",
+               values_to = "MWh")
+```
+```{r Stromerzeugung-täglich, echo = FALSE}
+# Zeitreihen tägliche Stromerzeugung plotten
+ggplot(daily_long, aes(x = date, y = MWh, color = source)) +
+  geom_line() +
+  labs(title = "Tägliche Stromerzeugung aus Solar und Wind in Deutschland",
+       subtitle = "Tägliche Summen aus stündlichen Einspeisedaten",
+       x = "Datum", y = "MWh",
+       color = "Energiequelle"
+       ) +
+    scale_color_discrete(
+    labels = c("solar"= "Solar",
+               "wind_onshore" = "Wind Onshore",
+               "wind_offshore" = "Wind Offshore")
+  ) +
+  theme_minimal()
+```
+
+Der Plot zeigt die tägliche summierte Stromerzeugung aus Solar, Wind Onshore und Wind Offshore im Zeitraum Januar 2015 bis September 2020. Die tägliche Darstellung zeigt besonders den gleichmäßigeren Verlauf der Solarenergie im Vergleich zu den täglichen Schwankungen (Volatilität) der Onshore Windenergie. 
+
+```{r monthly-stats, message=FALSE, warning=FALSE}
+# Monatliche Durchschnittswerte für Saisonalität
+# Aggregation monatlich im Durchschnitt
+monthly_avg <- daily_data %>%
+# Extrahiere den Monat aus der Spalte date. Statt Zahlen werden Abkürzungen der Monatsnamen verwendet
+  mutate(month = month(date, label = TRUE)) %>%
+# Gruppiere nach Monat
+  group_by(month) %>%
+# Berechne den Mittelwert pro Monat für die Energiequellen
+  summarise(
+    across(c(solar, wind_onshore, wind_offshore), \(x) mean(x, na.rm = TRUE)),
+# Gruppierung aufheben um Fehler durch gruppiertes Tibble   nachhaltig zu vermeiden
+    .groups = "drop")
+
+# Monatliche Daten in das Long-Format umwandeln für ggplot2
+monthly_long <- monthly_avg %>%
+# Welche Spalten verlängert werden
+  pivot_longer(cols = c(solar, wind_onshore, wind_offshore),
+               names_to = "source", # Neue Spalte für die Kategorien
+               values_to = "MWh")  # Neue Spalte für die Werte
+```
+```{r plot-monthly, echo=FALSE}
+
+ggplot(monthly_long, aes(x = month, y = MWh, fill = source)) +
+# Balken für den Vergleich verschiedener Kategorien, ungestapelt
+  geom_col(position = "dodge") +
+  labs(title = "Monatliche Durchschnittserzeugung aus Solar und Wind in Deutschland (MWh)",
+       subtitle = "Saisonale Muster erneuerbarer Energien",
+       x = "Monat", y = "Durchschnittliche MWh" ,
+  fill = "Energiequelle"
+) + 
+scale_fill_discrete(
+    labels = c(
+      "solar" = "Solar",
+      "wind_onshore" = "Wind Onshore",
+      "wind_offshore" = "Wind Offshore"
+    )
+  )+
+  theme_minimal()
+
+```
+
+Der Plot zeigt die durchschnittliche Stromerzeugung Solar, Wind Onshore und Wind Offshore pro Monat über den Zeitraum Januar 2015 bis September 2020. Durch die monatliche Aggregation der Daten werden die saisonalen Muster deutlich sichtbar. Die Solarenergie erreicht ihre Maxima regelmäßig in den Sommermonaten von Juni bis August und fällt in den Wintermonaten ab. Wind Onshore zeigt saisonale Schwankungen mit höheren Werten im Herbst und Winter, allerdings mit stärkerer Volatilität als Solar. Wind Offshore verläuft insgesamt konstanter, weist aber ebenfalls eine saisonale Tendenz auf. Die monatliche Aggregation erleichtert das Erkennen von Mustern und Trends.
+
+## **3. Zeitreihenanalyse**
+
+Für die Zeitreihenanalyse werden die täglich summierten Stromerzeugungsdaten von Solar, Wind Onshore und Wind Offshore verwendet. Diese bieten eine feinere zeitliche Auflösung im Gegensatz zu den Rohdaten, sind jedoch nicht so grob wie die monatlichen Durchschnittsdaten. Insbesondere im Vergleich zu den monatlichen Durchschnittswerten lassen sich bei der summierten täglichen Betrachtung saisonale Trends und Muster besser identifizieren.  
+
+### **3.1 Vorbereitung der Zeitreihen**
+
+Die Zeitreihen müssen vor der Modellbildung in ARIMA und zur Prognose vorverarbeitet werden.
+
+```{r ts-vorverarbeitung}
+# Extraktion der Zeitreihen für jede Energiequelle
+# Erzeugung von time-series (ts) Objekten
+solar_ts <- ts(daily_data$solar, start = c(2015, 1), frequency = 365)
+wind_on_ts <- ts(daily_data$wind_onshore, start = c(2015, 1), frequency = 365)
+wind_off_ts <- ts(daily_data$wind_offshore, start = c(2015, 1), frequency = 365)
+
+```
+### **3.2 Dekomposition (STL = Seasonal-Trend Decomposition using Loess)**
+Die Dekomposition dient zur Zerlegung dreier Komponenten in Zeitreihen: 
+
+- Saisonalität (Wiederkehrende Muster)
+- Trend (Langfristige Entwicklung)
+- Remainder (Zufällige Schwankungen, Ausreißer, Störungen)
+
+
+```{r dekomp}
+solar_dec <- stl(solar_ts, s.window = 13)
+wind_on_dec <- stl(wind_on_ts, s.window = 13)
+wind_off_dec <- stl(wind_off_ts, s.window = 13)
+```
+
+```{r stl-plot, echo = FALSE}
+# STL plots
+# Solar
+plot(solar_dec, main = "STL-Dekomposition: Solar")
+plot(wind_on_dec, main = "STL-Dekomposition: Wind Onshore")
+plot(wind_off_dec, main = "STL-Dekomposition: Wind Offshore")
+```
+
+### **3.3 Stationaritätsprüfung**
+Das ARIMA Modell benötigt stationäre Daten, d.h. dass die statistischen Eigenschaften wie Mittelwert, Varianz und Autokorrelation mit der Zeit konstant bleiben. Zur Überprüfung der Stationarität kann der statistische Augmented Dickey-Fuller (ADF) Test eingesetzt werden. Hierbei besagt die Nullhypothese H0, dass die Zeitreihe nicht stationär ist. Die Alternativhypothese besagt hingegen, dass Stationarität vorliegt. Bei einem p-Wert < 0.05 wird die Nullhypothese abgelehnt (Zeitreihe ist stationär), wohingehend bei einem p-Wert ≥ 0.05 die Nullhypothese nicht abgelehnt wird (Zeitreihe ist nicht stationär). Der ADF Test ist jedoch sensitiv gegenüber Trends, saisonalen Effekten und Ausreißern, weshalb zusätzlich grafisch mit der Autokorrelationsfunktion (ACF) auf Stationarität getestet wird. Die ACF lässt zusätzlich strukturelle Eigenschaften sichtbar werden und ergibt ein besseres Gesamtbild der Zeitreihe.
+
+**Augmented Dickey-Fuller Test**
+
+```{r adf, warning=FALSE}
+adf_solar <- adf.test(solar_ts)
+adf_wind_on <- adf.test(wind_on_ts)
+adf_wind_off <- adf.test(wind_off_ts)
+```
+| Zeitreihe       | p-Wert         | Schlussfolgerung     |
+|:---------------:|:--------------:|:--------------------:|
+| Solar           | 0.077          | Nicht Stationär      |
+| Wind Onshore    | 0.01           | Stationär            |
+| Wind Offshore   | 0.01           | Stationär            |
+
+**Autokorrelationsfunktion**
+```{r acf, results="hide"}
+acf(solar_ts, main = "ACF Solar", plot = FALSE)
+acf(wind_on_ts, main = "ACF Wind Onshore", plot = FALSE)
+acf(wind_off_ts, main = "ACF Wind Offshore", plot = FALSE)
+```
+```{r acf-plot, echo = FALSE}
+par(mfrow = c(1, 3))
+acf(solar_ts, main = "ACF Solar")
+acf(wind_off_ts, main = "ACF Wind Off")
+acf(wind_on_ts, main = "ACF Wind On")
+par(mfrow = c(1, 1))
+```
+
+Die Autokorrelationsfunktionen zeigen für alle Energiequellen nicht stationäres Verhalten. Die ACF Werte befinden sich oberhalb des Konfidenzintervalls (blaue gestrichelte Linien) und klingen kaum ab. Dieses Ergebnis steht für die Windenergie (On- und Offshore) im Kontrast zum Augmented Dickey-Fuller Test. Möglicherweise übersieht der Augmented Dickey-Fuller Test die saisonalen Effekte aufgrund anderer Sensitivität. Alle Zeitreihen sollten deshalb differenziert werden um Stationarität zu erreichen.
+
+**Differenzierung**
+
+```{r diff, warning=FALSE}
+solar_ts_diff <- diff(solar_ts)
+wind_on_diff <- diff(wind_on_ts)
+wind_off_diff <- diff(wind_off_ts)
+```
+```{r diff-plot, echo = FALSE}
+par(mfrow = c(1, 3))
+acf(solar_ts_diff, main = "ACF Solar")
+acf(wind_off_diff, main = "ACF Wind Off")
+acf(wind_on_diff, main = "ACF Wind On")
+par(mfrow = c(1, 1))
+```
+
+Die Differenzierung zeigt dass die Zeitreihen für alle Energiequellen deutlich stationärer sind als zuvor. Zur Weiterverarbeitung in ARIMA sind stationäre Zeitreihen unabdingbar. Mit Hilfe der auto.arima() Funktion werden Zeitreihen automatisch differenziert, sodass eine manuelle Differenzierung nicht mehr nötig ist und eine nachträgliche Umwandlung der differenzierten Werte in absolute Werte nicht mehr durchgeführt werden muss. Die auto.arima() Funktion wird aufgrund der einfachen Handhabung nachfolgend zur Analyse verwendet.
+
+### **3.4 ARIMA**
+
+ARIMA stellt eine klassische Methode zur Analyse von linearen Zeitreihen dar. Für Zeitreihen mit saisonaler Komponente, wird SARIMA empfohlen. Für die nachfolgenden Analysen werden die nicht-differenzierten Zeitreihenobjekte genutzt. SARIMA nutzt automatisch das Standardformat zur Modellbildung, das folgendermaßen aufgebaut ist: 
+
+(p,d,q)(P,D,Q)[s]
+
+**Nicht-saisonale Komponenten (p,d,q):**
+
+- p : Autoregressiver Ordnungsterm. Anzahl der Lag-Werte der Zeitreihe.
+- d : Differenzierungsgrad. Anzahl der Differenzierungen bis Stationarität der Zeitreihe erreicht ist.
+- q : Moving-Average-Term. Anzahl der Lag-Fehler.
+ 
+**Saisonale Komponenten (P,D,Q)[s]:**
+
+- P : Saisonaler Autoregressiver Ordnungsterm. Autoregression über saisonale Lags.
+- D : Saisonaler Differenzierungsgrad. Differenzierung einer ganzen Saison zur Trendentfernung.
+- Q : Saisonale Moving-Average-Term. Fehlerterm über eine Saison.
+- s : Länge der Saison. s = 365 für tägliche Daten mit jährlicher Saison.
+
+```{r arima model, results='hide'} 
+
+# SARIMA Modelle mit automatischer Parametersuche
+model_sarima_solar <- auto.arima(solar_ts, seasonal = TRUE, stepwise = TRUE, approximation = TRUE, trace = TRUE)
+model_sarima_wind_on <- auto.arima(wind_on_ts, seasonal = TRUE, stepwise = TRUE, approximation = TRUE, trace = TRUE)
+model_sarima_wind_off <- auto.arima(wind_off_ts, seasonal = TRUE, stepwise = TRUE, approximation = TRUE, trace = TRUE)
+```
+
+**Modellzusammenfassungen**
+
+```{r summary model, results='hide'}
+summary(model_sarima_solar)
+summary(model_sarima_wind_on)
+summary(model_sarima_wind_off)
+```
+
+**Residuenanalyse zur Modellvalidierung**
+
+Zur Beurteilung der Modellgüte wird die Residuenanalyse genutzt. Dabei wird u.a. die Autokorrelation der Residuen geprüft sowie der Ljung-Box-Test durchgeführt.
+
+**Solarenergie – ARIMA-Modell**
+
+Die Modellstruktur ARIMA(1,00)(0,1,0)[365] with drift der Solarenergie weist auf ein autoregressives Modell erster Ordnung mit saisonaler Differenzierung (Periode 365) hin. Der enthaltene Drift-Term erlaubt eine lineare Trendkomponente in der differenzierten Zeitreihe.
+
+
+```{r resid_solar, echo=FALSE}
+checkresiduals(model_sarima_solar)
+```
+
+Zu erkennen ist, dass die Residuen um 2016-2020 zeitweise sehr große Schwankungen aufweisen. Die Varianz der Fehler ist zudem nicht konstant und weisen somit Heteroskedastizität auf. Es gibt wiederkehrende Muster mit hohen Residuen im Sommer und niedrigeren im Winter, was auf eine saisonale Abhängigkeit schließen lässt.
+
+Die Autokorrelationsfunktion (ACF) zeigt, dass sich der Großteil der Werte innerhalb des Konfidenzintervalls befindet. Allerdings gibt es einzelne Peaks, sowie einen deutlichen Ausreißer bei Lag ≈ 365, die zeigen, dass eine saisonale Autokorrelation bestehen bleibt und das Modell die saisonale Struktur nicht vollständig entfernt. Zu diesem Zweck wurden zusätzliche AR- und MA-Terme in eine manuelle ARIMA eingebracht, allerdings war eine Modellbildung für ein Lag von 365 hier nicht möglich. Insgesamt scheint das Modell zu einfach zu sein.
+
+Die Verteilung der Residuen ist im Histogramm dargestellt. Die rote Linie ist die geschätzte Dichteverteilung, die ähnlich der Normalverteilung folgt. Zu erkennen ist, dass die Residuen nicht ganz normalverteilt sind und sich in der Verteilung schwere Ränder (engl. heavy tails) ergeben. Dies bedeutet, dass es mehr extreme Werte gibt als es die Normalverteilung vorhersagt. Das Modell überschätzt oder unterschätzt gelegentlich stark.
+
+Der Ljung-Box Test prüft, ob die Residuen unkorreliert (white noise) sind. Der sehr niedrige p-Wert (< 2.2e-16) liegt deutlich unter dem Signifikanzniveau von 0.05, sodass die Nullhypothese verworfen wird. Die Residuen sind nicht zufällig verteilt, sondern weisen signifikante Autokorrelationen auf. Das Modell ist nicht ausreichend, um die zeitliche Struktur vollständig zu erklären.
+
+**Windenergie Onshore – ARIMA-Modell**
+
+Die Modellstruktur (2,1,1) der Windenergie Onshore setzt sich aus zwei autoregressiven Anteilen, einer ersten Differenzierung und einem Moving Average Anteil zusammen ohne saisonalen Anteil.
+
+```{r resid_windon, echo=FALSE}
+checkresiduals(model_sarima_wind_on)
+```
+
+Im zeitlichen Verlauf der Residuen ist zu erkennen, dass diese um den Mittelwert von 0 schwanken, allerdings mit deutlich sichtbarer Varianzänderung (Heteroskedastizität). Dies deutet auf kurzfristige Autokorrelation hin.
+
+Die Autokorrelationsfunktion (ACF) der Residuen zeigt, dass die meisten Werte innerhalb der Konfidenzgrenzen liegen. Es gibt einzelne Ausreißer aber keine systematischen Muster. Einzelne Balken liegen jedoch leicht außerhalb, was auf Restautokorrelation hindeutet. Das Modell erklärt daher nicht alles vollständig.
+
+Das Histogramm der Residuen zeigt, dass die Normalverteilungsannahme nur teilweise erfüllt ist. Die Residuen zeigen eine rechtsschiefe, die durch Extremwetterbedingungen mit Windspitzen erklärbar ist.
+
+Der Ljung-Box-Test prüft die Hypothese, dass die Residuen nicht autokorreliert sind, was der Nullhypothese entspricht. Mit einem p-Wert von 0.002 (<0.05) wird die Nullhypothese verworfen, da signifikante Autokorrelationen zurückbleiben und das Modell nicht alle Strukturen der Zeitreihe vollständig abdeckt.
+
+**Windenergie Offshore – ARIMA-Modell**
+
+Die Modellstruktur (1,1,2) der Windenergie Offshore setzt sich aus einem autoregressiven Anteilen, einer ersten Differenzierung und zweier Moving Average Anteile zusammen ohne saisonalem Anteil.
+
+```{r resid_windoff, echo=FALSE}
+checkresiduals(model_sarima_wind_off)
+```
+
+Im zeitlichen Verlauf der Residuen ist zu erkennen, dass diese um 0 schwanken und dabei eine relativ gleichmäßige Streuung (Homoskedastizität) aufweisen. Das Verhalten der Residuen ist über die Zeit gesehen relativ stabil und zufällig, was für eine gute Modelgüte spricht.
+
+Die Autokorrelationsfunktion (ACF) der Residuen zeigt, dass der Großteil der Lags innerhalb der Konfidenzgrenzen liegen. Somit bleibt kaum Autokorrelation zurück und das Modell hat die zeitlichen Abhängigkeiten weitgehend entfernt.
+
+Das Histogramm der Residuen zeigt, dass diese annähernd normalverteilt sind und somit die Voraussetzungen für eine statistisch valide Schätzung der Prognoseintervalle erfüllt sind.
+
+Der Ljung-Box Test prüft die Hypothese, dass keine Autokorrelation in den Residuen besteht (Nullhypothese) Mit einem p-Wert von 0.02 (< 0.05) wird die Nullhypothese verworfen. Das Modell weist noch geringe Autokorrelation auf. Insgesamt betrachtet liefert das Modell jedoch eine Basis für die Prognose.
+
+**Fazit:**
+
+- Das **Solar-Modell** ARIMA(1,0,0)(0,1,0)[365] with drift bildet die saisonale und trendabhängige Dynamik der Solarenergie zwar grundsätzlich ab, erklärt die zeitlichen Abhängigkeiten jedoch nicht vollständig. Eine alternative Modellierung z.B. mit Prophet wird empfohlen.
+- Das **Wind-Onshore-Modell** ARIMA(2,1,1) erfasst die kurfristige Dynamik der Windenergie Onshore grundsätzlich gut, hinterlässt jedoch Restautokorrelation und nicht konstante Varianz. Ene alternative Modellierung durch Transfomation (logarithmisch oder Box-Cox) könnte die Prognosegüte weiter verbessern.
+- Das **Wind-Offshore-Modell** ARIMA(1,1,2) liefert für die Windenergie Offshore insgesamt gute Ergebnisse. Die Residuen sind nahezu zufällig verteilt und homoskedastisch, wodurch die Prognose grundsätzlich zuverlässig ist. Die verbleibende leichte Autokorrelation könnte durch eine Erweiterung um eine saisonale Komponente weiter reduziert werden.
+
+**Prognose für ein Jahr (365 Tage)**
+
+```{r prognose sarima}
+forecast_sarima_solar <- forecast(model_sarima_solar, h = 365)
+forecast_sarima_wind_on <- forecast(model_sarima_wind_on, h = 365)
+forecast_sarima_wind_off <- forecast(model_sarima_wind_off, h = 365)
+```
+
+**Visualisierung der ARIMA-Prognosen**
+
+```{r prognose plot, echo=FALSE}
+
+autoplot(forecast_sarima_solar) +
+  labs(title = "Jahresprognose der Solarenergie (ARIMA)", x = "Datum", y = "MWh")
+
+autoplot(forecast_sarima_wind_on) +
+  labs(title = "Jahresprognose Windenergie Onshore (ARIMA)", x = "Datum", y = "MWh")
+
+autoplot(forecast_sarima_wind_off) +
+  labs(title = "Jahresprognose Windenergie Offshore (ARIMA)", x = "Datum", y = "MWh")
+```
+
+**Fazit:** Die Prognoseplots unterstützen die Validierungsergebnisse.
+
+- **Solar:** Die Prognose folgt dem jährlichen Muster, dass im Sommer höhere Werte zu erwarten sind als im Winter. Im Winter zeigen die Konfidenzbänder eine breitere Streuung durch mehr natürliche Variabilität und Zunahme der Modellunsicherheit. Die Form und das ungefähre Niveau erscheinen aussagekräftig, während tagesgenauere Vorhersagen unsicher sind. Eine Modellierung mit einem robusteren Tool wie Prophet ist sinnvoll.
+
+- **Wind Onshore:** Das Fan-Chart ist breit und relativ gleichmäßig ohne einen klaren saisonale Verlauf zu zeigen. Die Mittelwert-Linie verläuft glatt. Das Modell trifft den Mittelwert gut aber Einzelpeaks bleiben unvorhersagbar. Aufgrund der hohen Volatilität der Serie und Reste der Autokorrelation sind breite Konfidenzintervalle zu erkennen.
+
+- **Wind Offshore:** Im Offshore Forecast knüpft die Prognose ohne positives Level glatt an die Vergangenheitswerte an. Die Konfidenzbänder sind im Mittel nicht schmaler als bei Wind-Onshore, was auf eine Restvarianz beider Modelle hindeutet.
+
+### **3.5 Prophet**
+
+Prophet ist ein  automatisiertes Prognoseverfahren von Facebook (Meta) zur Modellierung von Zeitreihen mit starken saisonalen Mustern und Ausreißern. Die Methode basiert standardmäßig auf einem additiven Modell mit nichtlinearem Trend sowie Anpassungen hinsichtlich täglicher, wöchentlicher und jährlicher Saisonalität.
+
+Neben der additiven Variante existiert noch die multiplikative Variante zur Saisonmodellierung. Nachfolgend werden beide Varianten erläutert:
+
+- **Additives Modell**: Die Stärke der saisonalen Schwankungen bleibt konstant und unabhängig vom allgemeinen Trend.
+
+- **Multiplikatives Modell**: Proportionale Anpassung der saisonalen Ausschläge zum Niveau der Zeitreihe.
+
+Der Vergleich beider Varianten ermöglicht es, die physikalisch realistische Struktur der Zeitreihe besser abzubilden und die Prognoseintervalle konsistenter zu kalibrieren.
+
+Daneben liefert Prophet für jede Vorhersage ein Konfidenzintervall, das die Unsicherheit der Prognose beschreibt. In dieser Analyse wurden 80 % und 90 % Intervalle getestet, um die Kalibrierung der Prognoseunsicherheit (Coverage) zu prüfen. Ein 80 %-Intervall ist schmaler und wirkt präziser, deckt aber weniger Werte ab. Ein 90 %-Intervall ist breiter und bildet die natürliche Variabilität realistischer ab. Die Kennzahl Coverage beschreibt den Anteil der tatsächlichen Beobachtungen, die innerhalb des Prognoseintervalls liegen. Bei einem 80 %-Intervall wird erwartet, dass etwa 80 % der realen Werte im Intervall liegen. Der Vergleich zwischen dem 80 % und 90 % Intervallen zeigt wie gut das Modell die natürliche Variabilität der Energieerzeugung abbildet.
+
+```{r prophet-solar, message=FALSE, warning=FALSE, results='hide'}
+# Konvertierung der Zeitreihe in ein Dataframe mit den Spalten ds (Datum) und y (Energiewert)
+df_solar <- daily_data %>%
+  # Format: YYYY-MM-DD, y numerisch
+  select(ds = date, y = solar) %>%
+  arrange(ds)
+head(df_solar)
+
+# Prophet Modell mit jährlicher Saisonalität 
+m_solar <- prophet(df_solar,
+                   yearly.seasonality = TRUE,
+                   weekly.seasonality = FALSE,
+                   daily.seasonality = FALSE,
+                   interval.width = 0.80, # 
+                   seasonality.mode = "additive") # Wähle zwischen "additive" und "multiplicative"
+
+# Prognose für 1 Jahr
+future_solar <- make_future_dataframe(m_solar, periods = 365)
+forecast_p_solar <- predict(m_solar, future_solar)
+
+# Vorschau der Vorhersagewerte
+head(forecast_p_solar[, c("ds","yhat","yhat_lower","yhat_upper")])
+
+# Plot der Prognose
+#plot(m_solar, forecast_p_solar) +
+  #ggtitle("Prophet Prognose Solar")
+
+# Modellgüte prüfen (Kreuzvalidierung)
+cv <- cross_validation(
+  m_solar,
+  initial = 1095,  # 3 Jahre Training
+  period = 180,    # alle 6 Monate neuer Cutoff
+  horizon = 365,   # 1 Jahr Prognose
+  units = "days"
+)
+
+# Fehlerkennzahlen berechnen
+perf <- performance_metrics(cv)
+head(perf)
+summary(perf)
+
+```
+
+**Prophet Modellgüte und Bewertung**
+
+Zur Prognose der Stromerzeugung aus Solar, Wind Onshore und Wind Offshore wurden mehrere Prophet Modelle getestet.
+Für jede Energiequelle wurden drei Varianten getestet:
+
+1. **Standardmodell**: Additive Saisonalität (Default), 80%-Konfidenzintervall  
+2. **Additiv 90%**: Additive Saisonalität mit erweitertem 90%-Konfidenzintervall  
+3. **Multiplikativ 90%**: Multiplikative Saisonalität mit 90%-Konfidenzintervall
+
+Zur Bewertung der Modellgüte wurden mehrere Fehlerkennzahlen (Performance-Metriken) herangezogen, die unterschiedliche Aspekte der Prognosequalität beschreiben:
+
+- **RMSE (Root Mean Squared Error)**: misst den mittleren quadratischen Fehler und reagiert stark auf Ausreißer.
+- **MAE (Mean Absolute Error)**: mittlerer absoluter Fehler, robuster gegenüber Ausreißern.
+- **MAPE (Mean Absolute Percentage Error)**: mittlerer prozentualer Fehler, zeigt die durchschnittliche prozentuale Abweichung.
+- **MdAPE (Median Absolute Percentage Error)**: medianbasierte, ausreißersichere Variante des MAPE.
+- **sMAPE (Symmetric Mean Absolute Percentage Error)**: symmetrische, skalenunabhängige Fehlerkennzahl.
+- **Coverage**: Anteil der tatsächlichen Werte, die innerhalb des Prognoseintervalls liegen (Maß für Unsicherheitskalibrierung).
+
+Niedrige Fehlerwerte (RMSE, MAE, MAPE, MdAPE, sMAPE) und eine Coverage nahe dem gewählten Intervallniveau deuten auf ein gut kalibriertes Modell hin.
+
+
+| Solar Modell         | RMSE   | MAE   | MAPE  | MdAPE | sMAPE | Coverage |
+|----------------------|--------|-------|-------|-------|-------|----------|
+| Standard (80%, add.) | 38.0k  | 30.9k | 46 %  | 27 %  | 33 %  | 0.69     |
+| Additiv (90%)        | 38.0k  | 30.9k | 46 %  | 27 %  | 33 %  | 0.82     |
+| Multiplikativ (90%)  | 37.7k  | 28.6k | 38 %  | 24 %  | 31 %  | 0.82     |
+
+**Interpretation:**  
+- Das Standardmodell unterschätzt die Unsicherheit (Coverage 69 % statt 80 %) 
+- Mit 90 %-Intervall verbessert sich die Kalibrierung deutlich (Coverage 82 %).  
+- Das multiplikative Modell mit 90 %-Intervall liefert die besten Fehlerwerte (MAE, MAPE, MdAPE, sMAPE) und bildet die stärkere Saisonalität realistischer ab
+
+
+| Wind Onshore Modell  | RMSE   | MAE    | MAPE  | MdAPE | sMAPE | Coverage |
+| -------------------- | ------ | ------ | ----- | ----- | ----- | -------- |
+| Standard (80%, add.) | 33.5k  | 28.7k  | 122 % | 37 %  | 50 %  | 0.52     |
+| Additiv (90%)        | 181.7k | 146.2k | 97 %  | 48 %  | 54 %  | 0.83     |
+| Multiplikativ (90%)  | 181.4k | 143.6k | 93 %  | 46 %  | 53 %  | 0.81     |
+
+**Interpretation:**  
+- Das Standardmodell unterschätzt die Unsicherheit deutlich (Coverage 52 %)
+- Die 90 % Varianten liefern realistischere Vorhersageintervalle
+- Das multiplikative Modell zeigt die geringsten Prognosefehler und beschreibt Schwankungen zwischen windarmen und windreichen Phasen realistischer
+
+
+| Wind Offshore Modell | RMSE  | MAE   | MAPE  | MdAPE | sMAPE | Coverage |
+| -------------------- | ----- | ----- | ----- | ----- | ----- | -------- |
+| Standard (80%, add.) | 33.5k | 28.7k | 122 % | 37 %  | 50 %  | 0.52     |
+| Additiv (90%)        | 33.5k | 28.7k | 122 % | 37 %  | 50 %  | 0.67     |
+| Multiplikativ (90%)  | 32.8k | 27.8k | 112 % | 36 %  | 49 %  | 0.70     |
+
+**Interpretation:**
+- Das Standardmodell unterschätzt die Unsicherheit (Coverage 52 %)
+- Das additive Modell verbessert die Stabilität aber das multiplikative Modell liefert die niedrigsten Fehlerwerte und eine bessere Intervallabdeckung
+- Offshore Daten weisen hohe saisonale und amplitudenabhängige Schwankungen auf, die durch multiplikative Saisonalität realistischer abgebildet werden
+
+**Fazit**
+Für alle drei Energiequellen erweist sich das multiplikative Prophet Modell mit 90 %-Konfidenzintervall als die beste Variante hinsichtlich Robustheit und Genauigkeit.
+
+
+### **3.6 ARIMA vs. Prophet Modellbewertung und Vergleich**
+
+Zur Prognose der Stromerzeugung aus Solar, Wind Onshore und Wind Offshore wurden zwei Modellansätze getestet: das klassische statistische ARIMA Modell und das moderne, komponentenbasierte Prophet Modell. Beide Methoden wurden hinsichtlich ihrer Fehlermaße, Reststruktur und Prognosegüte verglichen.
+
+**ARIMA - klassischer Ansatz**
+
+| Energiequelle     | Modellstruktur           | RMSE   | MAE   | MAPE    | MASE | Ljung-Box p-Wert | 
+| ----------------- | ------------------------ | ------ | ----- | ------- | ---- | ---------------- | 
+| **Solarenergie**  | ARIMA(1,0,0)(0,1,0)[365] | 37.2k  | 25.3k | —       | 0.69 | < 0.001          | 
+| **Wind Onshore**  | ARIMA(2,1,1)             | 123.6k | 92.2k | 66.1 %  | 0.58 | 0.002            |
+| **Wind Offshore** | ARIMA(1,1,2)             | 23.5k  | 18.5k | 108.2 % | 0.59 | 0.020            | 
+
+- Das ARIMA Modell bildet Trend und Saisonalität korrekt ab aber die Residuen sind bei Solar und Wind Offshore nicht vollständig zufällig
+- Die Prognosequalität ist stabil, insbesondere bei Wind Offshore (geringe RMSE/ MAE)
+- Bei stark schwankenden Zeitreihen (Solar, Wind Onshore) unterschätzt ARIMA die saisonale Dynamik leicht
+
+**Fazit:** ARIMA liefert gute interpretierbare Modelle, hat aber bei nichtlinearen saisonalen (wetterabhängigen) Effekten Schwächen.
+
+**Prophet - Komponentenbasierter Ansatz**
+
+| Energiequelle     | Modellvariante                | RMSE   | MAE    | MAPE  | sMAPE | Coverage |
+| ----------------- | ----------------------------- | ------ | ------ | ----- | ----- | -------- |
+| **Solarenergie**  | Prophet (Multiplikativ, 90 %) | 37.7k  | 28.6k  | 38 %  | 31 %  | 0.82     |
+| **Wind Onshore**  | Prophet (Multiplikativ, 90 %) | 181.4k | 143.6k | 93 %  | 53 %  | 0.81     |
+| **Wind Offshore** | Prophet (Multiplikativ, 90 %) | 32.8k  | 27.8k  | 112 % | 49 %  | 0.70     |
+
+- Prophet erfasst Saisonalität adaptiv
+- Besonders das multiplikative Modell beschreibt Skalierungseffekte (steigende Amplituden bei stärkerem Wind oder Sonneinstrahlung)
+- Für Solarenergie sind die RMSE/MAE Werte nahezu identisch zu ARIMA aber Prophet liefert realistischere Unsicherheiten
+
+**Fazit:** Prophet übertrifft ARIMA insbesondere bei nichtlinearen und stark schwankenden Zeitreihen.
+
+### **3.7 Gesamtfazit**
+
+Beide Ansätze liefern verlässliche Prognosen für erneuerbare Energiedaten. Allerdings zeigen sich klare Unterschiede:
+
+- ARIMA ist empfehlenswert für stabile, periodische Muster mit gleichmäßigen saisonalen Zyklen wie z.B. Wind Offshore
+- Prophet ist besser geeignet für nichtlineare oder amplitudenabhängige Verläufe wie z.B. bei Solar oder Wind Onshore
+
+## **4. Ausblick**
+
+Die Ergebnisse dieser Analyse zeigen, dass datenbasierte Prognosemodelle einen Beitrag zur Planung und Integration erneuerbarer Energien leisten können. Während ARIMA durch Stabilität und Nachvollziehbarkeit überzeugt, ermöglicht Prophet eine realistischere Abbildung saisonaler und nichtlinearer Effekte, was insbesondere bei der Solarenergie und stark schwankenden Winddaten von Vorteil ist.
+
+Für zukünftige Arbeiten bieten sich mehrere Entwicklungspfade an:
+
+- Erweiterung des Datenmodells durch Hinzufügen von exogenen Variablen wie Windgeschwindigkeit oder Temperatur
+- Kombination klassischer und maschineller Verfahren z.B. Hybridmodelle aus ARIMA und LSTM, um lineare und komplexe Muster zu erfassen
+- Echtzeit-Visualisierungen der Prognosen in interaktiven Dashboards wie Tableau
