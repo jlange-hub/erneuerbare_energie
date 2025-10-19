@@ -83,7 +83,7 @@ erneuerbare_energie/
 
 Der vollständige Projektbericht ist ebenfalls hier anzusehen:
 
-[Erneuerbare_Energien (HTML)](https://htmlpreview.github.io/?https://github.com/jlange-hub/erneuerbare_energie/blob/main/erneuerbare_energien.html)
+[Erneuerbare_Energien (HTML)](https://jlange-hub.github.io/erneuerbare_energie/)
 
 
 
