@@ -112,7 +112,7 @@ Der vollständige Projektbericht ist ebenfalls hier anzusehen:
 Die Daten stammen von **Open Power System Data (OPSD)** 
 
 > Open Power System Data (2020), *Time Series Data Package (2020-09-06)*,
-> [https://data.open-power-system-data.org/time_series/](https://data.open-power-system-data.org/time_series/),
+> [https://data.open-power-system-data.org/time_series/](https://data.open-power-system-data.org/time_series/)
 > abgerufen am 23.09.2025.
 
 **Lizenz:** [Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/).
