@@ -5,7 +5,7 @@ Aachen, Deutschland
 
 Kontakt: [Jaqueline Lange auf LinkedIn](https://www.linkedin.com/in/jaqueline-lange-jl/)
 
-**Letzte Aktualisierung:** 17. Oktober 2025  
+**Letzte Aktualisierung:** 24. Oktober 2025  
 **Programmiersprache:** R (Version 4.5.1)  
 **RStudio-Version:** 2025.09.0+387  
 
@@ -111,10 +111,11 @@ Der vollständige Projektbericht ist ebenfalls hier anzusehen:
 
 Die Daten stammen von **Open Power System Data (OPSD)** 
 
-Open Power System Data. (2020). *Time Series Data Package (2020-09-06)*.  
-[https://data.open-power-system-data.org/time_series/](https://data.open-power-system-data.org/time_series/)
+>Open Power System Data (2020), *Time Series Data Package (2020-09-06)*, 
+>[https://data.open-power-system-data.org/time_series/](https://data.open-power-system-data.org/time_series/),
+>abgerufen am 23.09.2025.
 
-**Lizenz:** [Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/) 
+**Lizenz:** [Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/).
 
 ---
 
